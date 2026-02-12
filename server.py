@@ -9,6 +9,7 @@ import json
 import shutil
 import zipfile
 import tarfile
+import tempfile
 import threading
 from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
@@ -25,7 +26,6 @@ UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "uploads")
 RESULTS_FOLDER = os.path.join(os.path.dirname(__file__), "results")
 REPORTS_FOLDER = os.path.join(os.path.dirname(__file__), "reports")
 FEEDBACK_FOLDER = os.path.join(os.path.dirname(__file__), "feedback")
-DATASETS_FOLDER = os.path.join(os.path.dirname(__file__), "datasets")
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "bmp", "tiff", "tif", "dcm", "webp"}
 DATASET_EXTENSIONS = {"zip", "tar", "gz", "tgz", "tar.gz", "7z", "rar"}
 
@@ -33,7 +33,6 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RESULTS_FOLDER, exist_ok=True)
 os.makedirs(REPORTS_FOLDER, exist_ok=True)
 os.makedirs(FEEDBACK_FOLDER, exist_ok=True)
-os.makedirs(DATASETS_FOLDER, exist_ok=True)
 
 # ---------- Flask App ----------
 app = Flask(__name__, static_folder="frontend", static_url_path="")
@@ -369,15 +368,12 @@ def train_on_dataset():
     epochs = int(request.form.get("epochs", 3))
     epochs = min(max(epochs, 1), 20)  # Clamp between 1 and 20
 
+    # Create unique temp directories for this training session
+    dataset_dir = tempfile.mkdtemp(prefix="hg_dataset_")
+    extract_dir = os.path.join(dataset_dir, "extracted")
+    os.makedirs(extract_dir, exist_ok=True)
+
     try:
-        # Create unique dataset directory
-        dataset_id = str(uuid.uuid4())[:12]
-        dataset_dir = os.path.join(DATASETS_FOLDER, dataset_id)
-        os.makedirs(dataset_dir, exist_ok=True)
-
-        extract_dir = os.path.join(dataset_dir, "extracted")
-        os.makedirs(extract_dir, exist_ok=True)
-
         if is_folder:
             # ─── Folder Upload: multiple files with relative paths ───
             folder_files = request.files.getlist("dataset_files")
@@ -496,6 +492,15 @@ def train_on_dataset():
         training_state["progress"] = 0
         training_state["message"] = f"Training failed: {str(e)}"
         return jsonify({"error": f"Training failed: {str(e)}"}), 500
+
+    finally:
+        # CLEANUP: Delete the temp directory and all uploaded files
+        try:
+            if 'dataset_dir' in locals() and os.path.exists(dataset_dir):
+                shutil.rmtree(dataset_dir)
+                print(f"[HealthGuard AI] Cleaned up temp training files: {dataset_dir}")
+        except Exception as cleanup_error:
+            print(f"[HealthGuard AI] Warning: Could not delete temp dir {dataset_dir}: {cleanup_error}")
 
 
 @app.route("/api/train/status", methods=["GET"])

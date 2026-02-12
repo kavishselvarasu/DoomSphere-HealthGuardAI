@@ -149,8 +149,76 @@ class MedicalImageAnalyzer:
         self.feedback_count = 0
         self.training_sessions = 0
 
+        # Model save path
+        self.models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
+        os.makedirs(self.models_dir, exist_ok=True)
+        self.model_save_path = os.path.join(self.models_dir, "healthguard_brain.pth")
+
+        # Try to load previously saved trained brain
+        self._load_brain()
+
         print("[HealthGuard AI] Model loaded successfully")
         print("[HealthGuard AI] Feedback & dataset training system initialized")
+
+    def _save_brain(self):
+        """Save the trained model brain (classifier weights + findings) to disk."""
+        try:
+            brain_data = {
+                "classifier_state_dict": self.model.classifier.state_dict(),
+                "findings_list": self.findings_list,
+                "custom_findings": self.custom_findings,
+                "num_features": self.num_features,
+                "feedback_count": self.feedback_count,
+                "training_sessions": self.training_sessions,
+                "training_history": self.training_history,
+                "feedback_history_count": len(self.feedback_history),
+            }
+            torch.save(brain_data, self.model_save_path)
+            size_kb = os.path.getsize(self.model_save_path) / 1024
+            print(f"[HealthGuard AI] Brain saved to {self.model_save_path} ({size_kb:.1f} KB)")
+        except Exception as e:
+            print(f"[HealthGuard AI] Warning: Could not save brain: {e}")
+
+    def _load_brain(self):
+        """Load a previously saved model brain from disk."""
+        if not os.path.exists(self.model_save_path):
+            print("[HealthGuard AI] No saved brain found, starting fresh")
+            return
+
+        try:
+            brain_data = torch.load(self.model_save_path, map_location=self.device, weights_only=False)
+
+            # Restore findings list and custom findings
+            saved_findings = brain_data.get("findings_list", [])
+            saved_custom = brain_data.get("custom_findings", [])
+
+            if saved_findings and len(saved_findings) != len(self.findings_list):
+                # Rebuild classifier to match saved size
+                self.findings_list = saved_findings
+                self.custom_findings = saved_custom
+                self.model.classifier = nn.Linear(self.num_features, len(self.findings_list))
+                self.model.classifier = self.model.classifier.to(self.device)
+
+            # Load classifier weights
+            self.model.classifier.load_state_dict(brain_data["classifier_state_dict"])
+            self.model.eval()
+
+            # Restore training stats
+            self.feedback_count = brain_data.get("feedback_count", 0)
+            self.training_sessions = brain_data.get("training_sessions", 0)
+            self.training_history = brain_data.get("training_history", [])
+
+            # Rebuild optimizer for new classifier
+            self.optimizer = torch.optim.Adam(
+                self.model.classifier.parameters(), lr=self.learning_rate
+            )
+
+            print(f"[HealthGuard AI] 🧠 Brain loaded! "
+                  f"{len(self.findings_list)} findings, "
+                  f"{self.training_sessions} training sessions, "
+                  f"{self.feedback_count} feedbacks")
+        except Exception as e:
+            print(f"[HealthGuard AI] Warning: Could not load brain: {e}, starting fresh")
 
     def _expand_classifier(self, new_finding: str):
         """Dynamically expand the classifier layer to support a new finding."""
@@ -336,6 +404,10 @@ class MedicalImageAnalyzer:
         print(f"[HealthGuard AI] Feedback #{self.feedback_count} processed. "
               f"Model updated: {result['model_updated']}. "
               f"Total findings: {len(self.findings_list)}")
+
+        # Auto-save brain after feedback
+        if result["model_updated"]:
+            self._save_brain()
 
         return result
 
@@ -577,7 +649,10 @@ class MedicalImageAnalyzer:
         }
 
         if progress_callback:
-            progress_callback(100, "Training complete!")
+            progress_callback(100, "Training complete! Saving brain...")
+
+        # Auto-save brain after training
+        self._save_brain()
 
         print(f"[HealthGuard AI] Dataset training #{self.training_sessions} complete: "
               f"{processed}/{total_images} images, {epochs} epochs, "
