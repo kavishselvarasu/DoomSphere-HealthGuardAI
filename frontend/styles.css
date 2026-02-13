@@ -2781,3 +2781,313 @@ img {
     left: 0;
     font-weight: bold;
 }
+
+/* ============================================================
+   Multi-File Preview Grid
+   ============================================================ */
+.multi-preview-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 12px;
+    padding: 16px;
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.multi-preview-thumb {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    transition: var(--transition-fast);
+}
+
+.multi-preview-thumb:hover {
+    border-color: var(--accent-cyan);
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.15);
+}
+
+.multi-preview-thumb img {
+    width: 80px;
+    height: 80px;
+    object-fit: cover;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-color);
+}
+
+.multi-preview-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-align: center;
+    word-break: break-all;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+/* ============================================================
+   Batch Results — Accordion
+   ============================================================ */
+.batch-results-container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0 40px;
+}
+
+.batch-accordion {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* --- Accordion Item --- */
+.batch-accordion-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    transition: border-color var(--transition-normal), box-shadow var(--transition-normal);
+}
+
+.batch-accordion-item:hover {
+    border-color: var(--border-active);
+}
+
+.batch-accordion-item.expanded {
+    border-color: var(--accent-cyan);
+    box-shadow: 0 0 20px rgba(56, 189, 248, 0.08);
+}
+
+/* --- Header --- */
+.accordion-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    cursor: pointer;
+    user-select: none;
+    transition: background var(--transition-fast);
+}
+
+.accordion-header:hover {
+    background: rgba(56, 189, 248, 0.04);
+}
+
+.accordion-header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    flex: 1;
+}
+
+.accordion-index {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-muted);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.accordion-file-icon {
+    width: 18px;
+    height: 18px;
+    color: var(--accent-cyan);
+    flex-shrink: 0;
+}
+
+.accordion-filename {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.accordion-severity {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    flex-shrink: 0;
+    padding: 2px 10px;
+    border-radius: 100px;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.accordion-error-badge {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent-red);
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    padding: 2px 10px;
+    border-radius: 100px;
+    letter-spacing: 0.05em;
+}
+
+.accordion-header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.accordion-download-btn {
+    padding: 6px !important;
+    border-radius: 8px !important;
+}
+
+.accordion-download-btn svg {
+    width: 16px;
+    height: 16px;
+}
+
+.accordion-chevron {
+    width: 20px;
+    height: 20px;
+    color: var(--text-muted);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.batch-accordion-item.expanded .accordion-chevron {
+    transform: rotate(180deg);
+    color: var(--accent-cyan);
+}
+
+/* --- Body (collapsed / expanded) --- */
+.accordion-body {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1), padding 0.3s ease;
+    padding: 0 20px;
+}
+
+.batch-accordion-item.expanded .accordion-body {
+    max-height: 2000px;
+    padding: 0 20px 20px;
+}
+
+/* --- Body content --- */
+.accordion-result-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 14px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    margin-bottom: 16px;
+}
+
+.accordion-result-row {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.accordion-result-row strong {
+    color: var(--text-primary);
+    margin-right: 6px;
+}
+
+.accordion-detail-section {
+    margin-bottom: 16px;
+}
+
+.accordion-detail-title {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--accent-cyan);
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.accordion-detail-text {
+    font-size: 14px;
+    color: var(--text-secondary);
+    line-height: 1.65;
+}
+
+.accordion-finding {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.accordion-finding:last-child {
+    border-bottom: none;
+}
+
+.finding-severity-badge {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.finding-severity-badge.low {
+    color: var(--accent-green);
+    background: var(--accent-green-dim);
+}
+
+.finding-severity-badge.medium {
+    color: var(--accent-yellow);
+    background: var(--accent-yellow-dim);
+}
+
+.finding-severity-badge.high {
+    color: var(--accent-red);
+    background: rgba(239, 68, 68, 0.12);
+}
+
+.accordion-finding-name {
+    font-size: 13px;
+    color: var(--text-primary);
+    flex: 1;
+}
+
+.accordion-finding-conf {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent-cyan);
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.accordion-error {
+    padding: 14px 16px;
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    border-radius: var(--radius-sm);
+    color: var(--accent-red);
+    font-size: 13px;
+}
+
+/* Download All spin */
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.spin {
+    animation: spin 1s linear infinite;
+}

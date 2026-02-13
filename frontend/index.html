@@ -231,15 +231,15 @@
                         <span class="format-tag">WebP</span>
                     </div>
                 </div>
-                <input type="file" id="fileInput" accept="image/*" hidden>
+                <input type="file" id="fileInput" accept="image/*" multiple hidden>
             </div>
 
-            <!-- Preview Area -->
+            <!-- Preview Area (multi-file) -->
             <div class="preview-area hidden" id="previewArea">
                 <div class="preview-card">
                     <div class="preview-header">
                         <div class="preview-info">
-                            <i data-lucide="image"></i>
+                            <i data-lucide="images"></i>
                             <div>
                                 <span class="preview-filename" id="previewFilename"></span>
                                 <span class="preview-filesize" id="previewFilesize"></span>
@@ -247,16 +247,16 @@
                         </div>
                         <button class="btn btn-ghost btn-sm" id="removeFileBtn">
                             <i data-lucide="x"></i>
-                            Remove
+                            Remove All
                         </button>
                     </div>
-                    <div class="preview-image-container">
-                        <img id="previewImage" alt="Scan Preview">
+                    <div class="multi-preview-grid" id="multiPreviewGrid">
+                        <!-- Thumbnails populated by JS -->
                     </div>
                 </div>
                 <button class="btn btn-primary btn-lg btn-analyze" id="analyzeBtn">
                     <i data-lucide="sparkles"></i>
-                    <span>Analyze Scan</span>
+                    <span>Analyze Scans</span>
                     <div class="btn-shimmer"></div>
                 </button>
             </div>
@@ -303,7 +303,7 @@
         </div>
     </div>
 
-    <!-- Results Section -->
+    <!-- Results Section (Single Scan - kept for backwards compat, hidden during batch) -->
     <section class="results-section hidden" id="resultsSection">
         <div class="section-header">
             <span class="section-badge result-badge">Analysis Complete</span>
@@ -313,7 +313,6 @@
         <div class="results-container">
             <!-- Top Summary Cards -->
             <div class="summary-cards">
-                <!-- Scan Type Card Removed -->
                 <div class="summary-card severity-card" id="severityCard">
                     <div class="summary-icon">
                         <i data-lucide="alert-triangle"></i>
@@ -323,7 +322,6 @@
                         <span class="summary-value" id="severityValue">—</span>
                     </div>
                 </div>
-                <!-- Removed Primary Finding Box -->
             </div>
             <div class="summary-info">
                 <span class="summary-label">Primary Finding</span>
@@ -360,8 +358,6 @@
                 </div>
                 <img id="medicalVizImage" src="" alt="Medical Visualization"
                     style="width: 100%; height: auto; display: block; object-fit: cover; max-height: 600px;">
-
-                <!-- HUD Overlay Elements -->
                 <div
                     style="position: absolute; top: 20px; left: 20px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--cyan); z-index: 2;">
                     <div>SCAN_ID: <span id="vizScanId">...</span></div>
@@ -375,15 +371,12 @@
             </div>
         </div>
 
-        <!-- Image Analysis Removed -->
-
         <!-- Detailed Findings -->
         <div class="findings-panel">
             <div class="findings-header">
                 <h3><i data-lucide="clipboard-list"></i> Detailed Findings</h3>
             </div>
             <div class="findings-list" id="findingsList">
-                <!-- Populated by JS -->
             </div>
         </div>
 
@@ -393,7 +386,6 @@
                 <h3><i data-lucide="bar-chart-3"></i> Scan Type Probability</h3>
             </div>
             <div class="scan-type-bars" id="scanTypeBars">
-                <!-- Populated by JS -->
             </div>
         </div>
 
@@ -429,7 +421,6 @@
             </div>
 
             <div class="feedback-form" id="feedbackForm">
-                <!-- Detected Scan Type (read-only) -->
                 <div class="feedback-field">
                     <label class="feedback-label">
                         <i data-lucide="scan"></i>
@@ -438,8 +429,6 @@
                     <input type="text" class="feedback-text-input" id="feedbackScanTypeInput"
                         placeholder="e.g., Chest X-Ray, MRI Brain, CT Abdomen" value="">
                 </div>
-
-                <!-- Description / About the Dataset -->
                 <div class="feedback-field">
                     <label class="feedback-label" for="feedbackDescription">
                         <i data-lucide="file-text"></i>
@@ -449,8 +438,6 @@
                         placeholder="Describe the medical scan, dataset origin, imaging conditions, patient demographics, or any relevant clinical context..."
                         rows="3"></textarea>
                 </div>
-
-                <!-- Professional Notes -->
                 <div class="feedback-field">
                     <label class="feedback-label" for="feedbackNotes">
                         <i data-lucide="file-edit"></i>
@@ -460,8 +447,6 @@
                         placeholder="Provide detailed observations, corrections, or additional findings that the AI missed. Your expertise helps the model learn and improve..."
                         rows="3"></textarea>
                 </div>
-
-                <!-- Star Rating -->
                 <div class="feedback-field">
                     <label class="feedback-label">
                         <i data-lucide="star"></i>
@@ -486,8 +471,6 @@
                         <span class="rating-text" id="ratingText">Select a rating</span>
                     </div>
                 </div>
-
-                <!-- Correct Finding Dropdown with Other option -->
                 <div class="feedback-field">
                     <label class="feedback-label" for="correctFinding">
                         <i data-lucide="stethoscope"></i>
@@ -512,7 +495,6 @@
                         <option value="Bone Density Variation">Bone Density Variation</option>
                         <option value="__other__">🔬 Other — Type your own finding...</option>
                     </select>
-                    <!-- Custom finding text input (shown when 'Other' is selected) -->
                     <div class="custom-finding-input hidden" id="customFindingWrapper">
                         <input type="text" class="feedback-text-input" id="customFindingInput"
                             placeholder="Type the medical finding name (e.g., Pleural Effusion, Pneumothorax)..." />
@@ -522,8 +504,6 @@
                         </p>
                     </div>
                 </div>
-
-                <!-- Severity Correction -->
                 <div class="feedback-field">
                     <label class="feedback-label">
                         <i data-lucide="alert-triangle"></i>
@@ -544,8 +524,6 @@
                         </button>
                     </div>
                 </div>
-
-                <!-- Submit Feedback -->
                 <button class="btn btn-primary btn-lg feedback-submit-btn" id="submitFeedbackBtn">
                     <i data-lucide="brain"></i>
                     <span>Submit Feedback & Train AI</span>
@@ -553,16 +531,13 @@
                 </button>
             </div>
 
-            <!-- Feedback Success State -->
             <div class="feedback-success hidden" id="feedbackSuccess">
                 <div class="feedback-success-icon">
                     <i data-lucide="check-circle-2"></i>
                 </div>
                 <h4>Feedback Applied Successfully!</h4>
                 <p class="feedback-success-message" id="feedbackMessage"></p>
-                <div class="feedback-stats-mini" id="feedbackStatsMini">
-                    <!-- Populated by JS -->
-                </div>
+                <div class="feedback-stats-mini" id="feedbackStatsMini"></div>
                 <div class="feedback-actions">
                     <button class="btn btn-primary btn-lg" id="reanalyzeBtn">
                         <i data-lucide="refresh-cw"></i>
@@ -584,6 +559,45 @@
                 Analyze Another Scan
             </button>
         </div>
+        </div>
+    </section>
+
+    <!-- ===== Batch Results Section (Accordion) ===== -->
+    <section class="results-section hidden" id="batchResultsSection">
+        <div class="section-header">
+            <span class="section-badge result-badge">Batch Analysis Complete</span>
+            <h2 class="section-title">Scan Results</h2>
+            <p class="section-subtitle" id="batchResultsSummary"></p>
+        </div>
+
+        <div class="batch-results-container">
+            <!-- Accordion items populated by JS -->
+            <div id="batchAccordion" class="batch-accordion"></div>
+
+            <!-- Download All -->
+            <div class="download-panel" style="margin-top: 1.5rem;">
+                <div class="download-content">
+                    <div class="download-icon">
+                        <i data-lucide="archive"></i>
+                    </div>
+                    <div class="download-info">
+                        <h3>Download All Reports</h3>
+                        <p>Download all PDF reports in a single ZIP archive.</p>
+                    </div>
+                    <button class="btn btn-primary btn-lg" id="downloadAllBtn">
+                        <i data-lucide="download"></i>
+                        Download All (ZIP)
+                    </button>
+                </div>
+            </div>
+
+            <!-- New Scan Button -->
+            <div class="new-scan-area">
+                <button class="btn btn-ghost btn-lg" id="newBatchScanBtn">
+                    <i data-lucide="rotate-ccw"></i>
+                    Analyze More Scans
+                </button>
+            </div>
         </div>
     </section>
 
@@ -846,6 +860,7 @@
         </div>
     </footer>
 
+    <script src="https://js.puter.com/v2/"></script>
     <script src="app.js"></script>
 </body>
 

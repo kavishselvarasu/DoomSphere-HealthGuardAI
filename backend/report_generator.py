@@ -8,6 +8,37 @@ import datetime
 from fpdf import FPDF
 
 
+# ── Colour constants ──────────────────────────────────────────────
+BLACK = (0, 0, 0)
+LIGHT_GREY_BG = (220, 220, 220)       # boxes / fills
+DARK_GREY_LINE = (130, 130, 130)       # lines / borders
+WHITE = (255, 255, 255)
+
+
+def sanitize_text(text: str) -> str:
+    """
+    Sanitize text for FPDF (Latin-1 encoding).
+    Replaces common Unicode characters with ASCII equivalents and strips others.
+    """
+    if not isinstance(text, str):
+        return str(text)
+    
+    replacements = {
+        '\u2018': "'", '\u2019': "'",  # Smart quotes
+        '\u201c': '"', '\u201d': '"',
+        '\u2013': '-', '\u2014': '-',  # Dashes
+        '\u2022': '-',                 # Bullet
+        '\u2026': '...',               # Ellipsis
+        '\u00a0': ' ',                 # Non-breaking space
+    }
+    
+    for char, replacement in replacements.items():
+        text = text.replace(char, replacement)
+        
+    # Final safety net: encode to Latin-1, replacing errors with '?'
+    return text.encode('latin-1', 'replace').decode('latin-1')
+
+
 class MedicalReportPDF(FPDF):
     """Custom PDF class for medical reports."""
 
@@ -15,67 +46,89 @@ class MedicalReportPDF(FPDF):
         super().__init__()
         self.set_auto_page_break(auto=True, margin=25)
 
+    # ── Header ────────────────────────────────────────────────────
     def header(self):
-        # Brand bar
-        self.set_fill_color(15, 23, 42)
+        # Brand bar – light grey
+        self.set_fill_color(*LIGHT_GREY_BG)
         self.rect(0, 0, 210, 18, 'F')
 
         self.set_font("Helvetica", "B", 11)
-        self.set_text_color(56, 189, 248)
+        self.set_text_color(*BLACK)
         self.set_y(4)
         self.cell(0, 10, "HEALTHGUARD AI", ln=False, align="L")
 
         self.set_font("Helvetica", "", 8)
-        self.set_text_color(148, 163, 184)
+        self.set_text_color(*BLACK)
         self.cell(0, 10, "Medical Scan Analysis Report", ln=True, align="R")
 
         self.ln(8)
 
+    # ── Footer ────────────────────────────────────────────────────
     def footer(self):
         self.set_y(-20)
-        self.set_draw_color(51, 65, 85)
+        self.set_draw_color(*DARK_GREY_LINE)
         self.line(10, self.get_y(), 200, self.get_y())
         self.ln(2)
 
         self.set_font("Helvetica", "I", 7)
-        self.set_text_color(100, 116, 139)
+        self.set_text_color(*BLACK)
         self.cell(0, 8, f"Page {self.page_no()}/{{nb}}", align="L", ln=False)
         self.cell(0, 8,
                   "DISCLAIMER: AI-assisted analysis. Not a substitute for professional medical diagnosis.",
                   align="R", ln=True)
 
+    # ── Section title ─────────────────────────────────────────────
     def add_section_title(self, title):
         self.set_font("Helvetica", "B", 13)
-        self.set_text_color(56, 189, 248)
+        self.set_text_color(*BLACK)
         self.cell(0, 10, title, ln=True)
-        self.set_draw_color(56, 189, 248)
+        self.set_draw_color(*DARK_GREY_LINE)
         self.line(10, self.get_y(), 80, self.get_y())
         self.ln(4)
 
+    # ── Key-value pair ────────────────────────────────────────────
     def add_key_value(self, key, value, severity=None):
         self.set_font("Helvetica", "B", 9)
-        self.set_text_color(148, 163, 184)
+        self.set_text_color(*BLACK)
         self.cell(55, 7, key + ":", ln=False)
 
         self.set_font("Helvetica", "", 9)
-        if severity == "high":
-            self.set_text_color(239, 68, 68)
-        elif severity == "medium":
-            self.set_text_color(251, 191, 36)
-        elif severity == "low":
-            self.set_text_color(52, 211, 153)
-        else:
-            self.set_text_color(226, 232, 240)
-
+        self.set_text_color(*BLACK)
         self.cell(0, 7, str(value), ln=True)
 
+    # ── Finding card (auto-sized) ─────────────────────────────────
     def add_finding_card(self, finding: dict, index: int):
-        # Card background
-        y_start = self.get_y()
-        self.set_fill_color(30, 41, 59)
-        self.rect(10, y_start, 190, 28, 'F')
+        card_x = 10
+        card_w = 190
+        content_margin = 6    # left padding inside card
+        inner_w = card_w - content_margin - 4  # usable text width
 
-        # Severity indicator
+        # --- Measure how tall the card needs to be ---
+        line_h_title = 7
+        line_h_desc = 5
+
+        # Description height via NbLines helper
+        desc = finding.get("description", "")
+        if len(desc) > 300:
+            desc = desc[:297] + "..."
+
+        self.set_font("Helvetica", "", 8)
+        desc_lines = self.multi_cell(inner_w, line_h_desc, desc, dry_run=True, output="LINES") or [""]
+        desc_height = len(desc_lines) * line_h_desc
+
+        card_h = 4 + line_h_title + 2 + desc_height + 4  # top-pad + title row + gap + desc + bot-pad
+
+        # Page-break guard
+        if self.get_y() + card_h > self.h - self.b_margin:
+            self.add_page()
+
+        y_start = self.get_y()
+
+        # Card background – light grey
+        self.set_fill_color(*LIGHT_GREY_BG)
+        self.rect(card_x, y_start, card_w, card_h, 'F')
+
+        # Severity indicator stripe
         severity = finding.get("severity", "medium")
         if severity == "high":
             self.set_fill_color(239, 68, 68)
@@ -83,29 +136,28 @@ class MedicalReportPDF(FPDF):
             self.set_fill_color(251, 191, 36)
         else:
             self.set_fill_color(52, 211, 153)
-        self.rect(10, y_start, 3, 28, 'F')
+        self.rect(card_x, y_start, 3, card_h, 'F')
 
         # Finding name
-        self.set_xy(16, y_start + 2)
+        self.set_xy(card_x + content_margin, y_start + 3)
         self.set_font("Helvetica", "B", 10)
-        self.set_text_color(226, 232, 240)
-        self.cell(120, 6, f"{index}. {finding['finding']}", ln=False)
+        self.set_text_color(*BLACK)
+        self.cell(120, line_h_title, f"{index}. {finding['finding']}", ln=False)
 
         # Confidence badge
         self.set_font("Helvetica", "B", 9)
+        self.set_text_color(*BLACK)
         conf = finding["confidence"]
-        self.cell(0, 6, f"{conf}% confidence", ln=True, align="R")
+        self.cell(0, line_h_title, f"{conf}% confidence", ln=True, align="R")
 
         # Description
-        self.set_x(16)
+        self.set_x(card_x + content_margin)
         self.set_font("Helvetica", "", 8)
-        self.set_text_color(148, 163, 184)
-        desc = finding.get("description", "")
-        if len(desc) > 150:
-            desc = desc[:147] + "..."
-        self.multi_cell(180, 4, desc)
+        self.set_text_color(*BLACK)
+        self.multi_cell(inner_w, line_h_desc, desc)
 
-        self.ln(4)
+        # Move cursor below card
+        self.set_y(y_start + card_h + 4)
 
 
 def generate_report(
@@ -130,7 +182,7 @@ def generate_report(
         # --- Professional Header ---
         header = detailed_report['header']
         pdf.set_font("Helvetica", "B", 18)
-        pdf.set_text_color(226, 232, 240)
+        pdf.set_text_color(*BLACK)
         pdf.cell(0, 10, "Radiology Analysis Report", ln=True, align="C")
         pdf.ln(5)
 
@@ -155,38 +207,28 @@ def generate_report(
         # --- 2. Structural Analysis ---
         pdf.add_section_title("2. AI Structural Analysis")
         pdf.set_font("Helvetica", "", 9)
-        pdf.set_text_color(148, 163, 184)
+        pdf.set_text_color(*BLACK)
         structures = detailed_report.get('structures', {})
         for region, description in structures.items():
             pdf.set_font("Helvetica", "B", 9)
-            # Calculate remaining width for description
-            # Page width - margins (left+right) - label width
-            # But we want multi_cell to start AFTER label
+            pdf.set_text_color(*BLACK)
             pdf.cell(50, 6, region + ":", ln=False)
-            
+
             pdf.set_font("Helvetica", "", 9)
-            # Explicitly calculate available width
-            available_width = 190 - 50 # 210 - 20(margins) - 50(label)
-            
-            # Save current X, Y
-            x_after_label = pdf.get_x()
-            y_before_multicell = pdf.get_y()
-            
+            pdf.set_text_color(*BLACK)
+            available_width = 190 - 50
+
             pdf.multi_cell(available_width, 6, description)
-            # Ensure we don't overlap if description was short, though multi_cell handles Y
-            # If multi_cell went to next line, get_y updated. 
-            # We just adding a small buffer or checking if we need explicit new line
-            # pdf.ln(2) is fine as multi_cell moves cursor to next line
             pdf.ln(1)
         pdf.ln(4)
 
         # --- 3. Quantitative Metrics ---
         pdf.add_section_title("3. Quantitative Metrics")
-        
-        # Table Header
-        pdf.set_fill_color(30, 41, 59)
+
+        # Table Header – light grey background
+        pdf.set_fill_color(*LIGHT_GREY_BG)
         pdf.set_font("Helvetica", "B", 8)
-        pdf.set_text_color(226, 232, 240)
+        pdf.set_text_color(*BLACK)
         pdf.cell(50, 8, "Parameter", 1, 0, 'L', True)
         pdf.cell(30, 8, "Result", 1, 0, 'C', True)
         pdf.cell(40, 8, "Normal Range", 1, 0, 'C', True)
@@ -194,28 +236,22 @@ def generate_report(
 
         # Table Rows
         pdf.set_font("Helvetica", "", 8)
-        pdf.set_text_color(148, 163, 184)
+        pdf.set_text_color(*BLACK)
         for metric in detailed_report.get('metrics', []):
             pdf.cell(50, 8, metric['parameter'], 1, 0, 'L')
             pdf.cell(30, 8, metric['result'], 1, 0, 'C')
             pdf.cell(40, 8, metric['normal'], 1, 0, 'C')
-            
-            status = metric['status']
-            if status == "Normal":
-                pdf.set_text_color(52, 211, 153)
-            elif status == "Abnormal" or status == "Review":
-                pdf.set_text_color(239, 68, 68)
-            else:
-                pdf.set_text_color(148, 163, 184)
-            
-            pdf.cell(30, 8, status, 1, 1, 'C')
-            pdf.set_text_color(148, 163, 184) # Reset color
+
+            pdf.set_text_color(*BLACK)
+            pdf.cell(30, 8, metric['status'], 1, 1, 'C')
+            pdf.set_text_color(*BLACK)
         pdf.ln(6)
 
         # --- 4. Risk Stratification ---
         pdf.add_section_title("4. AI Risk Stratification")
         for risk in detailed_report.get('risks', []):
             pdf.set_font("Helvetica", "B", 9)
+            pdf.set_text_color(*BLACK)
             pdf.cell(60, 6, risk['pathology'], ln=False)
             pdf.set_font("Helvetica", "", 9)
             pdf.cell(40, 6, f"Probability: {risk['probability']}", ln=False)
@@ -225,12 +261,15 @@ def generate_report(
         # --- 5. Clinical Interpretation ---
         pdf.add_section_title("5. Clinical Interpretation Summary")
         pdf.set_font("Helvetica", "", 9)
+        pdf.set_text_color(*BLACK)
         pdf.multi_cell(0, 5, detailed_report.get('summary', ''))
         pdf.ln(6)
 
         # --- 6. Recommendations ---
         pdf.add_section_title("6. Recommendations")
+        pdf.set_text_color(*BLACK)
         for rec in detailed_report.get('recommendations', []):
+            pdf.set_font("Helvetica", "", 9)
             pdf.cell(5, 5, "-", ln=False)
             available_width = 190 - 5
             pdf.multi_cell(available_width, 5, rec)
@@ -239,6 +278,7 @@ def generate_report(
         # --- 7. AI Confidence ---
         pdf.add_section_title("7. AI Confidence Statement")
         pdf.set_font("Helvetica", "I", 9)
+        pdf.set_text_color(*BLACK)
         pdf.cell(0, 6, detailed_report.get('confidence', ''), ln=True)
         pdf.ln(4)
 
@@ -246,10 +286,10 @@ def generate_report(
         # Fallback for old style if detailed_report is missing
         # --- Report Title ---
         pdf.set_font("Helvetica", "B", 20)
-        pdf.set_text_color(226, 232, 240)
+        pdf.set_text_color(*BLACK)
         pdf.cell(0, 12, "Scan Analysis Report", ln=True, align="C")
         pdf.set_font("Helvetica", "", 9)
-        pdf.set_text_color(100, 116, 139)
+        pdf.set_text_color(*BLACK)
         pdf.cell(0, 6, f"Generated on {now.strftime('%B %d, %Y at %I:%M %p')}", ln=True, align="C")
         pdf.ln(8)
 
@@ -267,45 +307,40 @@ def generate_report(
         desc = scan_type_result.get("description", "")
         if desc:
             pdf.set_font("Helvetica", "I", 8)
-            pdf.set_text_color(148, 163, 184)
+            pdf.set_text_color(*BLACK)
             pdf.multi_cell(0, 5, desc)
             pdf.ln(4)
 
         # --- Overall Assessment ---
         pdf.add_section_title("Overall Assessment")
         severity = analysis_result.get("overall_severity", "medium")
-        pdf.add_key_value("Overall Severity", severity.upper(), severity=severity)
-        pdf.add_key_value("Primary Finding", analysis_result.get("primary_finding", "N/A"),
-                          severity=severity)
+        pdf.add_key_value("Overall Severity", severity.upper())
+        pdf.add_key_value("Primary Finding", analysis_result.get("primary_finding", "N/A"))
         pdf.ln(6)
 
         # --- Findings ---
         pdf.add_section_title("Detailed Findings")
         findings = analysis_result.get("findings", [])
         for i, finding in enumerate(findings, 1):
-            if pdf.get_y() > 240:
-                pdf.add_page()
             pdf.add_finding_card(finding, i)
 
     # --- Images (Common) ---
     heatmap_file = analysis_result.get("heatmap_path")
     annotated_file = analysis_result.get("annotated_path")
-    
+
     if heatmap_file or annotated_file:
         pdf.add_page()
         pdf.add_section_title("Visual Analysis")
 
-        # Original scan
-        # Heatmap
         # Heatmap
         if heatmap_file:
             heatmap_full = os.path.join(images_dir, heatmap_file)
             if os.path.exists(heatmap_full):
                 pdf.set_font("Helvetica", "B", 10)
-                pdf.set_text_color(226, 232, 240)
+                pdf.set_text_color(*BLACK)
                 pdf.cell(0, 8, "GradCAM Heatmap Analysis", ln=True)
                 pdf.set_font("Helvetica", "", 8)
-                pdf.set_text_color(148, 163, 184)
+                pdf.set_text_color(*BLACK)
                 pdf.cell(0, 5, "Warmer colors indicate regions most relevant to the AI prediction.", ln=True)
                 pdf.ln(2)
                 try:
@@ -315,15 +350,14 @@ def generate_report(
                 pdf.ln(6)
 
         # Annotated
-        # Annotated
         if annotated_file:
             annotated_full = os.path.join(images_dir, annotated_file)
             if os.path.exists(annotated_full):
                 pdf.set_font("Helvetica", "B", 10)
-                pdf.set_text_color(226, 232, 240)
+                pdf.set_text_color(*BLACK)
                 pdf.cell(0, 8, "Annotated Regions of Interest", ln=True)
                 pdf.set_font("Helvetica", "", 8)
-                pdf.set_text_color(148, 163, 184)
+                pdf.set_text_color(*BLACK)
                 pdf.cell(0, 5,
                         "Green boxes and yellow contours highlight AI-identified regions of interest.",
                         ln=True)
@@ -338,7 +372,7 @@ def generate_report(
     pdf.add_page()
     pdf.add_section_title("Important Disclaimer")
     pdf.set_font("Helvetica", "", 9)
-    pdf.set_text_color(148, 163, 184)
+    pdf.set_text_color(*BLACK)
     disclaimer = (
         "This report has been generated by HealthGuard AI, an artificial intelligence-based "
         "medical scan analysis system. The findings and predictions presented in this report "

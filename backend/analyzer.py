@@ -807,10 +807,11 @@ class MedicalImageAnalyzer:
             "training_history": self.training_history[-5:],
         }
 
-    def analyze(self, image: Image.Image, output_dir: str, patient_name: str = "", scan_type: str = "", body_part: str = "", patient_description: str = "") -> dict:
+    def analyze(self, image: Image.Image, output_dir: str, patient_name: str = "", scan_type: str = "", body_part: str = "", patient_description: str = "", puter_result: dict = None) -> dict:
         """
         Analyze a medical image.
         Returns findings, heatmap path, annotated image path, and detailed report data.
+        If puter_result is provided (from frontend Puter.js), it is used as primary AI result.
         """
         # Convert to RGB if needed
         if image.mode != "RGB":
@@ -875,50 +876,64 @@ class MedicalImageAnalyzer:
 
         # ---------------------------------------------------------
         # AI ENGINE SELECTION
-        # Priority: NVIDIA (if key exists) > Groq (if key exists) > Local DenseNet
+        # Priority: Puter.js result (free, from frontend) > Groq > Claude > Local
+        # Note: Puter.js is frontend-only, no server-side API available
         # ---------------------------------------------------------
-        # ---------------------------------------------------------
-        groq_result = self._analyze_with_groq(image, patient_name, scan_type, body_part, patient_description)
-        nvidia_result = self._analyze_with_nvidia(image, patient_name, scan_type, body_part, patient_description)
+        effective_puter = puter_result  # From frontend Puter.js (if it succeeded)
         
-        # Medical Visualization (Clara-style)
+        if effective_puter:
+            print(f"[HealthGuard AI] ✅ Using Puter.js result (free AI, no API keys consumed)")
+            groq_result = self._analyze_with_groq(image, patient_name, scan_type, body_part, patient_description)
+            claude_result = None
+        else:
+            # Puter.js didn't provide result, use API key models
+            groq_result = self._analyze_with_groq(image, patient_name, scan_type, body_part, patient_description)
+            claude_result = self._analyze_with_claude(image, patient_name, scan_type, body_part, patient_description)
+        
+        # Medical Visualization disabled (NVIDIA API no longer active)
         medical_viz_path = None
-        # Try generating visualization if NVIDIA key is available (regardless of which text model was used)
-        if os.getenv("NVIDIA_API_KEY"):
-             medical_viz_path = self._generate_medical_visualization(findings, body_part, scan_type, output_dir)
         
         primary_finding_name = findings[0]["finding"] if findings else "Normal"
         model_name = "HealthGuard DenseNet-121"
         model_device = str(self.device)
-        
-        if nvidia_result:
-            print(f"[HealthGuard AI] ✅ Successfully analyzed with NVIDIA Clara/MONAI")
-            findings = nvidia_result.get("findings", findings)
-            overall_severity = nvidia_result.get("overall_severity", overall_severity)
-            detailed_report = nvidia_result.get("detailed_report", detailed_report)
-            primary_finding_name = nvidia_result.get("primary_finding", primary_finding_name)
-            
-            # HIDDEN: Actual engine is NVIDIA
+
+        # --- Merge results (Puter/Claude + Groq dual-AI analysis) ---
+        primary_ai = effective_puter or claude_result  # Puter takes priority over Claude
+
+        if primary_ai and groq_result:
+            source = "Puter + Groq" if effective_puter else "Claude + Groq"
+            print(f"[HealthGuard AI] ✅ Dual-AI analysis: {source} results merged")
+            combined = self._merge_ai_results(primary_ai, groq_result)
+            findings = combined.get("findings", findings)
+            overall_severity = combined.get("overall_severity", overall_severity)
+            detailed_report = combined.get("detailed_report", detailed_report)
+            primary_finding_name = combined.get("primary_finding", primary_finding_name)
             model_name = "HealthGuard DenseNet-121"
             model_device = "Local NPU/GPU"
-            
-            # Mask AI version in report header
+            if "header" in detailed_report:
+                detailed_report["header"]["ai_version"] = "HealthGuard DenseNet-121 v2.5"
+                detailed_report["header"]["physician"] = f"{source} (Merged Analysis)"
+
+        elif primary_ai:
+            source = "Puter (free)" if effective_puter else "Claude"
+            print(f"[HealthGuard AI] ✅ Successfully analyzed with {source}")
+            findings = primary_ai.get("findings", findings)
+            overall_severity = primary_ai.get("overall_severity", overall_severity)
+            detailed_report = primary_ai.get("detailed_report", detailed_report)
+            primary_finding_name = primary_ai.get("primary_finding", primary_finding_name)
+            model_name = "HealthGuard DenseNet-121"
+            model_device = "Local NPU/GPU"
             if "header" in detailed_report:
                 detailed_report["header"]["ai_version"] = "HealthGuard DenseNet-121 v2.5"
 
         elif groq_result:
             print(f"[HealthGuard AI] ✅ Successfully analyzed with Groq")
-            # Replace findings and report with Groq's superior analysis
             findings = groq_result.get("findings", findings)
             overall_severity = groq_result.get("overall_severity", overall_severity)
             detailed_report = groq_result.get("detailed_report", detailed_report)
             primary_finding_name = groq_result.get("primary_finding", primary_finding_name)
-            
-            # HIDDEN: Actual engine is Groq
             model_name = "HealthGuard DenseNet-121"
             model_device = "Local NPU/GPU"
-
-            # Mask AI version in report header
             if "header" in detailed_report:
                 detailed_report["header"]["ai_version"] = "HealthGuard DenseNet-121 v2.5"
 
@@ -1122,12 +1137,20 @@ class MedicalImageAnalyzer:
             return None
 
     def _analyze_with_groq(self, image: Image.Image, patient_name: str, scan_type: str, body_part: str, patient_description: str = "") -> dict:
-        """Analyze image using Groq Llama-3.2-11b-vision-preview."""
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
+        """Analyze image using Groq Llama-4-Maverick with automatic API key rotation on rate limits."""
+
+        # Build ordered list of available API keys for fallback
+        api_keys = []
+        for key_name in ("GROQ_API_KEY", "GROQ_API_KEY_2", "GROQ_API_KEY_3"):
+            k = os.getenv(key_name)
+            if k:
+                api_keys.append((key_name, k))
+
+        if not api_keys:
+            print("[HealthGuard AI] ❌ No Groq API keys found in environment")
             return None
 
-        print(f"[HealthGuard AI] 🟢 Using Groq API for analysis...")
+        print(f"[HealthGuard AI] 🟢 Using Groq API for analysis... ({len(api_keys)} key(s) available)")
 
         # Convert image to base64
         buffered = io.BytesIO()
@@ -1136,11 +1159,6 @@ class MedicalImageAnalyzer:
         image.save(buffered, format="JPEG")
         img_str = base64.b64encode(buffered.getvalue()).decode()
         img_url = f"data:image/jpeg;base64,{img_str}"
-
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
 
         # Prompt for structured JSON output
         system_prompt = """You are an expert medical AI assistant specialized in radiology. Analyze the provided medical scan image relative to the patient context.
@@ -1200,33 +1218,283 @@ class MedicalImageAnalyzer:
             "stream": False
         }
 
-        try:
-            response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
-            
-            if response.status_code != 200:
-                print(f"[HealthGuard AI] ❌ Groq API Error: {response.text}")
-                return None
-
-            result = response.json()
-            content = result['choices'][0]['message']['content']
-            
-            # Clean up potential markdown formatting
-            content = content.replace("```json", "").replace("```", "").strip()
-            
-            # Parse JSON
+        # Try each API key; rotate on rate-limit (429) or server errors (5xx)
+        last_error = None
+        for key_name, api_key in api_keys:
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
             try:
-                data = json.loads(content)
-                # Ensure findings is a list
-                if "findings" not in data:
-                    data["findings"] = [{"finding": data.get("primary_finding", "Unknown"), "confidence": 0, "description": "No details provided", "severity": "medium"}]
-                return data
-            except json.JSONDecodeError:
-                print(f"[HealthGuard AI] ⚠️ Failed to parse Groq JSON response. Raw content:\n{content}")
-                return None
+                response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
 
-        except Exception as e:
-            print(f"[HealthGuard AI] ❌ Groq Integration Exception: {e}")
+                if response.status_code == 429:
+                    print(f"[HealthGuard AI] ⚠️ Rate limit hit on {key_name}, rotating to next key...")
+                    import time
+                    time.sleep(1)   # brief pause before retrying
+                    continue
+
+                if response.status_code >= 500:
+                    print(f"[HealthGuard AI] ⚠️ Server error ({response.status_code}) on {key_name}, rotating...")
+                    continue
+
+                if response.status_code != 200:
+                    print(f"[HealthGuard AI] ❌ Groq API Error ({key_name}): {response.text}")
+                    return None
+
+                result = response.json()
+                content = result['choices'][0]['message']['content']
+
+                # Clean up potential markdown formatting
+                content = content.replace("```json", "").replace("```", "").strip()
+
+                # Parse JSON
+                try:
+                    data = json.loads(content)
+                    if "findings" not in data:
+                        data["findings"] = [{"finding": data.get("primary_finding", "Unknown"), "confidence": 0, "description": "No details provided", "severity": "medium"}]
+                    print(f"[HealthGuard AI] ✅ Groq analysis succeeded using {key_name}")
+                    return data
+                except json.JSONDecodeError:
+                    print(f"[HealthGuard AI] ⚠️ Failed to parse Groq JSON response. Raw content:\n{content}")
+                    return None
+
+            except Exception as e:
+                print(f"[HealthGuard AI] ⚠️ Exception with {key_name}: {e}")
+                last_error = e
+                continue
+
+        print(f"[HealthGuard AI] ❌ All Groq API keys exhausted. Last error: {last_error}")
+        return None
+
+    def _analyze_with_claude(self, image: Image.Image, patient_name: str, scan_type: str, body_part: str, patient_description: str = "") -> dict:
+        """Analyze image using Claude (Anthropic) with automatic API key rotation on rate limits."""
+
+        # Build ordered list of available API keys for fallback
+        api_keys = []
+        for key_name in ("CLAUDE_API_KEY", "CLAUDE_API_KEY_2", "CLAUDE_API_KEY_3"):
+            k = os.getenv(key_name)
+            if k:
+                api_keys.append((key_name, k))
+
+        if not api_keys:
+            print("[HealthGuard AI] ⚠️ No Claude API keys found in environment, skipping Claude analysis")
             return None
+
+        print(f"[HealthGuard AI] 🟣 Using Claude API for analysis... ({len(api_keys)} key(s) available)")
+
+        # Convert image to base64
+        buffered = io.BytesIO()
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        image.save(buffered, format="JPEG")
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+
+        # Prompt for structured JSON output
+        system_prompt = """You are an expert medical AI assistant specialized in radiology. Analyze the provided medical scan image relative to the patient context.
+Return a valid JSON object ONLY, with NO markdown formatting, matching this structure:
+{
+    "findings": [
+        {"finding": "Name of finding (e.g. Normal, Pneumonia, Fracture)", "confidence": 95.0, "description": "Medical description of the finding", "severity": "low/medium/high"}
+    ],
+    "overall_severity": "low/medium/high",
+    "primary_finding": "Most significant finding name",
+    "detailed_report": {
+        "header": {
+            "patient_name": "...", "modality": "...", "scan_date": "...", "body_part": "...", 
+            "ai_version": "HealthGuard DenseNet-121 v2.5", "physician": "AI Analysis"
+        },
+        "quality": {
+            "image_clarity": "Diagnostic quality score (e.g. 98%)", "artifacts": "None/Motion/etc", 
+            "contrast": "Optimal/Suboptimal", "slice_completeness": "Yes/No"
+        },
+        "structures": {
+            "Lungs / Primary Region": "Detailed observation...",
+            "Mediastinum / Heart": "Detailed observation...",
+            "Bones / Skeletal": "Detailed observation...",
+            "Soft Tissues": "Detailed observation..."
+        },
+        "metrics": [
+            {"parameter": "Relevant Metric", "result": "Value", "normal": "Range", "status": "Normal/Abnormal"}
+        ],
+        "risks": [
+            {"pathology": "Condition", "probability": "Percentage", "risk_category": "Severity"}
+        ],
+        "summary": "Comprehensive clinical summary of the case.",
+        "recommendations": ["Recommendation 1", "Recommendation 2"],
+        "confidence": "Overall confidence score (e.g. 98%)"
+    }
+}"""
+
+        user_content = f"Patient Name: {patient_name}\nScan Type: {scan_type}\nBody Part: {body_part}"
+        if patient_description:
+            user_content += f"\nPatient History/Symptoms: {patient_description}"
+        user_content += "\nAnalyze this medical scan image in detail."
+
+        payload = {
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 4096,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": img_str,
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": system_prompt + "\n\n" + user_content
+                        }
+                    ]
+                }
+            ]
+        }
+
+        # Try each API key; rotate on rate-limit (429) or server errors (5xx)
+        last_error = None
+        for key_name, api_key in api_keys:
+            headers = {
+                "x-api-key": api_key,
+                "Content-Type": "application/json",
+                "anthropic-version": "2023-06-01"
+            }
+            try:
+                response = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload)
+
+                if response.status_code == 429:
+                    print(f"[HealthGuard AI] ⚠️ Rate limit hit on {key_name}, rotating to next key...")
+                    import time
+                    time.sleep(1)
+                    continue
+
+                if response.status_code >= 500:
+                    print(f"[HealthGuard AI] ⚠️ Server error ({response.status_code}) on {key_name}, rotating...")
+                    continue
+
+                # Billing / auth / credit errors — rotate to next key
+                if response.status_code in (400, 401, 403):
+                    print(f"[HealthGuard AI] ⚠️ Auth/billing error on {key_name} (HTTP {response.status_code}), rotating to next key...")
+                    continue
+
+                if response.status_code != 200:
+                    print(f"[HealthGuard AI] ❌ Claude API Error ({key_name}): {response.text}")
+                    return None
+
+                result = response.json()
+                # Extract text from Claude's response
+                content = ""
+                for block in result.get("content", []):
+                    if block.get("type") == "text":
+                        content += block["text"]
+
+                # Clean up potential markdown formatting
+                content = content.replace("```json", "").replace("```", "").strip()
+
+                # Parse JSON
+                try:
+                    data = json.loads(content)
+                    if "findings" not in data:
+                        data["findings"] = [{"finding": data.get("primary_finding", "Unknown"), "confidence": 0, "description": "No details provided", "severity": "medium"}]
+                    print(f"[HealthGuard AI] ✅ Claude analysis succeeded using {key_name}")
+                    return data
+                except json.JSONDecodeError:
+                    print(f"[HealthGuard AI] ⚠️ Failed to parse Claude JSON response. Raw content:\n{content}")
+                    return None
+
+            except Exception as e:
+                print(f"[HealthGuard AI] ⚠️ Exception with Claude {key_name}: {e}")
+                last_error = e
+                continue
+
+        print(f"[HealthGuard AI] ❌ All Claude API keys exhausted. Last error: {last_error}")
+        return None
+
+    def _merge_ai_results(self, claude_result: dict, groq_result: dict) -> dict:
+        """
+        Merge analysis results from Claude and Groq into a comprehensive combined report.
+        Claude is used as the primary source; Groq supplements with additional findings.
+        """
+        # Start with Claude findings as primary
+        merged_findings = list(claude_result.get("findings", []))
+        claude_finding_names = {f["finding"].lower() for f in merged_findings}
+
+        # Add unique Groq findings not already covered by Claude
+        for gf in groq_result.get("findings", []):
+            if gf["finding"].lower() not in claude_finding_names:
+                gf["description"] = gf.get("description", "") + " (Corroborated by secondary AI model)"
+                merged_findings.append(gf)
+
+        # Sort by confidence descending
+        merged_findings.sort(key=lambda f: f.get("confidence", 0), reverse=True)
+
+        # Determine overall severity (take the higher one)
+        sev_order = {"low": 0, "medium": 1, "high": 2}
+        claude_sev = sev_order.get(claude_result.get("overall_severity", "low"), 0)
+        groq_sev = sev_order.get(groq_result.get("overall_severity", "low"), 0)
+        combined_sev = "high" if max(claude_sev, groq_sev) == 2 else ("medium" if max(claude_sev, groq_sev) == 1 else "low")
+
+        # Primary finding: use Claude's (higher priority)
+        primary_finding = claude_result.get("primary_finding", groq_result.get("primary_finding", "Unknown"))
+
+        # Merge detailed reports: start with Claude, enrich with Groq
+        claude_report = claude_result.get("detailed_report", {})
+        groq_report = groq_result.get("detailed_report", {})
+
+        merged_report = dict(claude_report)  # shallow copy
+
+        # Combine summaries
+        claude_summary = claude_report.get("summary", "")
+        groq_summary = groq_report.get("summary", "")
+        if groq_summary and groq_summary != claude_summary:
+            merged_report["summary"] = f"{claude_summary}\n\n--- Secondary AI Analysis (Cross-Validation) ---\n{groq_summary}"
+
+        # Merge metrics (deduplicate by parameter name)
+        claude_metrics = claude_report.get("metrics", [])
+        groq_metrics = groq_report.get("metrics", [])
+        seen_params = {m["parameter"].lower() for m in claude_metrics}
+        for gm in groq_metrics:
+            if gm["parameter"].lower() not in seen_params:
+                claude_metrics.append(gm)
+                seen_params.add(gm["parameter"].lower())
+        merged_report["metrics"] = claude_metrics
+
+        # Merge recommendations (deduplicate)
+        claude_recs = set(claude_report.get("recommendations", []))
+        groq_recs = set(groq_report.get("recommendations", []))
+        merged_report["recommendations"] = list(claude_recs | groq_recs)
+
+        # Merge risks (deduplicate by pathology)
+        claude_risks = claude_report.get("risks", [])
+        groq_risks = groq_report.get("risks", [])
+        seen_risks = {r["pathology"].lower() for r in claude_risks}
+        for gr in groq_risks:
+            if gr["pathology"].lower() not in seen_risks:
+                claude_risks.append(gr)
+                seen_risks.add(gr["pathology"].lower())
+        merged_report["risks"] = claude_risks
+
+        # Merge structures (combine text for overlapping keys)
+        claude_structs = claude_report.get("structures", {})
+        groq_structs = groq_report.get("structures", {})
+        for key, val in groq_structs.items():
+            if key in claude_structs:
+                if val.lower() not in claude_structs[key].lower():
+                    claude_structs[key] += f" [Secondary: {val}]"
+            else:
+                claude_structs[key] = val
+        merged_report["structures"] = claude_structs
+
+        return {
+            "findings": merged_findings,
+            "overall_severity": combined_sev,
+            "primary_finding": primary_finding,
+            "detailed_report": merged_report,
+        }
 
     def _generate_professional_report_data(
         self, findings: list, severity: str, patient_name: str, scan_type: str, body_part: str

@@ -159,6 +159,16 @@ def analyze_scan():
         body_part = request.form.get("body_part", "")
         patient_description = request.form.get("patient_description", "")
         
+        # Check for pre-analyzed result from Puter.js (frontend free AI)
+        puter_result = None
+        puter_result_raw = request.form.get("puter_result", "")
+        if puter_result_raw:
+            try:
+                puter_result = json.loads(puter_result_raw)
+                print("[HealthGuard AI] 🟢 Received pre-analyzed result from Puter.js (free AI)")
+            except json.JSONDecodeError:
+                print("[HealthGuard AI] ⚠️ Failed to parse Puter.js result, will use API keys")
+        
         # Use user input for scan type if provided, otherwise use classifier result
         final_scan_type = scan_type_input if scan_type_input else scan_type_result.get("scan_type", "Unknown")
         scan_type_result["scan_type"] = final_scan_type
@@ -169,7 +179,8 @@ def analyze_scan():
             patient_name=patient_name,
             scan_type=final_scan_type,
             body_part=body_part,
-            patient_description=patient_description
+            patient_description=patient_description,
+            puter_result=puter_result
         )
 
         # Step 3: Generate PDF report
@@ -588,6 +599,180 @@ def training_status():
         "message": training_state["message"],
         "result": training_state["result"],
     })
+
+
+@app.route("/api/analyze-batch", methods=["POST"])
+def analyze_batch():
+    """
+    Analyze multiple uploaded medical scan images in one request.
+    Expects multipart form data with one or more 'images' files.
+    Shared metadata (patient_name, scan_type, body_part, patient_description)
+    applies to every image in the batch.
+    Returns a JSON array of per-scan result objects.
+    """
+    files = request.files.getlist("images")
+    if not files or all(f.filename == "" for f in files):
+        return jsonify({"error": "No image files provided"}), 400
+
+    # Shared metadata
+    patient_name = request.form.get("patient_name", "")
+    scan_type_input = request.form.get("scan_type", "")
+    body_part = request.form.get("body_part", "")
+    patient_description = request.form.get("patient_description", "")
+
+    # Check for pre-analyzed result from Puter.js (frontend free AI)
+    puter_result = None
+    puter_result_raw = request.form.get("puter_result", "")
+    if puter_result_raw:
+        try:
+            puter_result = json.loads(puter_result_raw)
+            print("[HealthGuard AI] 🟢 Received pre-analyzed result from Puter.js (free AI)")
+        except json.JSONDecodeError:
+            print("[HealthGuard AI] ⚠️ Failed to parse Puter.js result, will use API keys")
+
+    results = []
+
+    for idx, file in enumerate(files):
+        if file.filename == "" or not allowed_file(file.filename):
+            results.append({
+                "filename": file.filename or "unknown",
+                "error": "Invalid file format",
+            })
+            continue
+
+        try:
+            session_id = str(uuid.uuid4())[:12]
+            original_filename = secure_filename(file.filename)
+
+            # Save uploaded file
+            upload_path = os.path.join(UPLOAD_FOLDER, f"{session_id}_{original_filename}")
+            file.save(upload_path)
+
+            # Open image
+            image = Image.open(upload_path)
+
+            # Step 1: Classify scan type
+            scan_type_result = classify_scan_type(image)
+            final_scan_type = scan_type_input if scan_type_input else scan_type_result.get("scan_type", "Unknown")
+            scan_type_result["scan_type"] = final_scan_type
+
+            # Step 2: Analyze with ML model
+            # Use Puter result for first file only (subsequent files use API keys / server Puter)
+            results_dir = os.path.join(RESULTS_FOLDER, session_id)
+            os.makedirs(results_dir, exist_ok=True)
+
+            analysis_result = analyzer.analyze(
+                image=image,
+                output_dir=results_dir,
+                patient_name=patient_name,
+                scan_type=final_scan_type,
+                body_part=body_part,
+                patient_description=patient_description,
+                puter_result=puter_result if idx == 0 else None,
+            )
+
+            # Step 3: Generate PDF report
+            report_filename = generate_report(
+                scan_type_result=scan_type_result,
+                analysis_result=analysis_result,
+                original_filename=original_filename,
+                output_dir=REPORTS_FOLDER,
+                images_dir=results_dir,
+                detailed_report=analysis_result.get("detailed_report"),
+            )
+
+            # Persist session
+            persistence_path = os.path.join(results_dir, "original_scan.png")
+            image.save(persistence_path)
+
+            metadata = {
+                "original_filename": original_filename,
+                "scan_type_result": scan_type_result,
+                "patient_name": patient_name,
+                "upload_path": upload_path,
+            }
+            with open(os.path.join(results_dir, "session_metadata.json"), "w") as f:
+                json.dump(metadata, f)
+
+            session_store[session_id] = {
+                "upload_path": upload_path,
+                "original_filename": original_filename,
+                "scan_type_result": scan_type_result,
+                "persistence_path": persistence_path,
+            }
+
+            results.append({
+                "filename": original_filename,
+                "session_id": session_id,
+                "scan_type": scan_type_result,
+                "analysis": {
+                    "findings": analysis_result["findings"],
+                    "overall_severity": analysis_result["overall_severity"],
+                    "primary_finding": analysis_result["primary_finding"],
+                    "description": analysis_result["findings"][0].get("description", ""),
+                    "model_info": analysis_result["model_info"],
+                    "detailed_report": analysis_result.get("detailed_report"),
+                },
+                "images": {
+                    "heatmap": f"/api/results/{session_id}/{analysis_result['heatmap_path']}",
+                    "annotated": f"/api/results/{session_id}/{analysis_result['annotated_path']}",
+                    "medical_viz": f"/api/results/{session_id}/{analysis_result['medical_viz_path']}" if analysis_result.get("medical_viz_path") else None,
+                },
+                "report": {
+                    "filename": report_filename,
+                    "download_url": f"/api/report/{report_filename}",
+                },
+            })
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            results.append({
+                "filename": file.filename or "unknown",
+                "error": f"Analysis failed: {str(e)}",
+            })
+
+    return jsonify({"results": results}), 200
+
+
+@app.route("/api/reports/download-all", methods=["POST"])
+def download_all_reports():
+    """
+    Download multiple PDF reports as a single ZIP file.
+    Expects JSON body: { "filenames": ["report1.pdf", "report2.pdf", ...] }
+    """
+    try:
+        data = request.get_json()
+        if not data or "filenames" not in data:
+            return jsonify({"error": "No filenames provided"}), 400
+
+        filenames = data["filenames"]
+        if not filenames:
+            return jsonify({"error": "Empty filenames list"}), 400
+
+        # Create ZIP in memory
+        import io
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for fname in filenames:
+                safe_name = secure_filename(fname)
+                report_path = os.path.join(REPORTS_FOLDER, safe_name)
+                if os.path.exists(report_path):
+                    zf.write(report_path, safe_name)
+
+        zip_buffer.seek(0)
+
+        return send_file(
+            zip_buffer,
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name="HealthGuard_AI_Reports.zip",
+        )
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to create ZIP: {str(e)}"}), 500
 
 
 @app.route("/api/results/<session_id>/<filename>", methods=["GET"])

@@ -14,7 +14,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const fileInput = document.getElementById("fileInput");
     const uploadContent = document.getElementById("uploadContent");
     const previewArea = document.getElementById("previewArea");
-    const previewImage = document.getElementById("previewImage");
+    const multiPreviewGrid = document.getElementById("multiPreviewGrid");
     const previewFilename = document.getElementById("previewFilename");
     const previewFilesize = document.getElementById("previewFilesize");
     const removeFileBtn = document.getElementById("removeFileBtn");
@@ -65,15 +65,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const trainingResultStats = document.getElementById("trainingResultStats");
     const trainAnotherBtn = document.getElementById("trainAnotherBtn");
 
-    let selectedFile = null;
+    let selectedFiles = [];
     let currentReportUrl = null;
     let currentSessionId = null;
     let currentScanType = "Unknown";
     let selectedRating = 0;
     let selectedSeverity = "";
-    let selectedDatasetFiles = null; // Array of files (for folder) or single file
+    let selectedDatasetFiles = null;
     let isDatasetFolder = false;
     let selectedEpochs = 3;
+    let batchReportFilenames = [];  // for Download All
 
     // ---------- API Base URL ----------
     const API_BASE = window.location.origin;
@@ -134,40 +135,56 @@ document.addEventListener("DOMContentLoaded", () => {
         uploadZone.classList.remove("drag-over");
         const files = e.dataTransfer.files;
         if (files.length > 0) {
-            handleFile(files[0]);
+            handleFiles(files);
         }
     });
 
     fileInput.addEventListener("change", (e) => {
         if (e.target.files.length > 0) {
-            handleFile(e.target.files[0]);
+            handleFiles(e.target.files);
         }
     });
 
-    function handleFile(file) {
-        // Validate file type
-        const validTypes = ["image/png", "image/jpeg", "image/jpg", "image/bmp", "image/tiff", "image/webp"];
-        if (!validTypes.some(t => file.type.startsWith("image/"))) {
-            alert("Please upload a valid image file.");
+    function handleFiles(fileList) {
+        const validFiles = [];
+        for (let i = 0; i < fileList.length; i++) {
+            const file = fileList[i];
+            if (file.type.startsWith("image/")) {
+                validFiles.push(file);
+            }
+        }
+        if (validFiles.length === 0) {
+            alert("Please upload valid image files.");
             return;
         }
 
-        selectedFile = file;
+        selectedFiles = validFiles;
 
-        // Show preview
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            previewImage.src = e.target.result;
-        };
-        reader.readAsDataURL(file);
+        // Summary text
+        previewFilename.textContent = validFiles.length === 1 ? validFiles[0].name : `${validFiles.length} scans selected`;
+        const totalSize = validFiles.reduce((sum, f) => sum + f.size, 0);
+        previewFilesize.textContent = formatFileSize(totalSize);
 
-        previewFilename.textContent = file.name;
-        previewFilesize.textContent = formatFileSize(file.size);
+        // Build thumbnail grid
+        multiPreviewGrid.innerHTML = "";
+        validFiles.forEach((file, idx) => {
+            const thumb = document.createElement("div");
+            thumb.className = "multi-preview-thumb";
+            const img = document.createElement("img");
+            img.alt = file.name;
+            const reader = new FileReader();
+            reader.onload = (ev) => { img.src = ev.target.result; };
+            reader.readAsDataURL(file);
+            const label = document.createElement("span");
+            label.className = "multi-preview-label";
+            label.textContent = file.name.length > 18 ? file.name.substring(0, 15) + "..." : file.name;
+            thumb.appendChild(img);
+            thumb.appendChild(label);
+            multiPreviewGrid.appendChild(thumb);
+        });
 
         uploadZone.classList.add("hidden");
         previewArea.classList.remove("hidden");
-
-        // Re-init icons
         lucide.createIcons();
     }
 
@@ -176,28 +193,166 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     function resetUpload() {
-        selectedFile = null;
+        selectedFiles = [];
         fileInput.value = "";
-        previewImage.src = "";
+        multiPreviewGrid.innerHTML = "";
         uploadZone.classList.remove("hidden");
         previewArea.classList.add("hidden");
         resultsSection.classList.add("hidden");
+        const batchSec = document.getElementById("batchResultsSection");
+        if (batchSec) batchSec.classList.add("hidden");
         currentSessionId = null;
+        batchReportFilenames = [];
         resetFeedbackForm();
     }
 
     // ---------- Analyze ----------
     analyzeBtn.addEventListener("click", () => {
-        if (!selectedFile) return;
+        if (selectedFiles.length === 0) return;
         startAnalysis();
     });
+
+    // ---------- Puter.js Free AI Analysis (try before API keys) ----------
+    async function tryPuterAnalysis(file, patientName, scanType, bodyPart, patientDescription) {
+        if (typeof puter === "undefined") {
+            console.log("[Puter] ❌ Puter.js not loaded (puter object undefined)");
+            return null;
+        }
+        if (!puter.ai || !puter.ai.chat) {
+            console.log("[Puter] ❌ puter.ai.chat not available");
+            return null;
+        }
+
+        try {
+            console.log("[Puter] 🟢 Attempting free AI analysis via Puter.js...");
+
+            // Convert file to data URL for Puter vision (same as providing an image URL)
+            const dataUrl = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+            console.log("[Puter] Image converted to data URL, size:", Math.round(dataUrl.length / 1024), "KB");
+
+            const prompt = `You are an expert medical AI assistant specialized in radiology. Analyze the provided medical scan image.
+Patient Name: ${patientName || "Anonymous"}
+Scan Type: ${scanType || "Unknown"}
+Body Part: ${bodyPart || "Unknown"}
+${patientDescription ? "Patient History/Symptoms: " + patientDescription : ""}
+
+Analyze this medical scan image in detail and return a valid JSON object ONLY, with NO markdown formatting, NO code blocks, matching this exact structure:
+{
+    "findings": [
+        {"finding": "Name of finding", "confidence": 95.0, "description": "Medical description", "severity": "low/medium/high"}
+    ],
+    "overall_severity": "low/medium/high",
+    "primary_finding": "Most significant finding name",
+    "detailed_report": {
+        "header": {
+            "patient_name": "${patientName || "Anonymous"}", "modality": "...", "scan_date": "${new Date().toLocaleDateString()}", "body_part": "${bodyPart || "Unknown"}",
+            "ai_version": "HealthGuard DenseNet-121 v2.5", "physician": "AI Analysis"
+        },
+        "quality": {
+            "image_clarity": "Diagnostic quality score (e.g. 98%)", "artifacts": "None/Motion/etc",
+            "contrast": "Optimal/Suboptimal", "slice_completeness": "Yes/No"
+        },
+        "structures": {
+            "Lungs / Primary Region": "Detailed observation...",
+            "Mediastinum / Heart": "Detailed observation...",
+            "Bones / Skeletal": "Detailed observation...",
+            "Soft Tissues": "Detailed observation..."
+        },
+        "metrics": [
+            {"parameter": "Relevant Metric", "result": "Value", "normal": "Range", "status": "Normal/Abnormal"}
+        ],
+        "risks": [
+            {"pathology": "Condition", "probability": "Percentage", "risk_category": "Severity"}
+        ],
+        "summary": "Comprehensive clinical summary of the case.",
+        "recommendations": ["Recommendation 1", "Recommendation 2"],
+        "confidence": "Overall confidence score (e.g. 98%)"
+    }
+}`;
+
+            // Models from Puter.js docs that support vision
+            const modelsToTry = ["gpt-4o", "gpt-4.1", "gpt-5-nano"];
+            let lastErr = null;
+
+            for (const model of modelsToTry) {
+                try {
+                    console.log(`[Puter] 🔄 Trying model: ${model}...`);
+
+                    // puter.ai.chat(prompt, imageUrl, options) - per official Puter.js tutorial
+                    const response = await Promise.race([
+                        puter.ai.chat(prompt, dataUrl, { model: model }),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout 60s")), 60000))
+                    ]);
+
+                    console.log("[Puter] Got response from", model, "- type:", typeof response);
+
+                    // Extract text from response (Puter returns various formats)
+                    let text = "";
+                    if (typeof response === "string") {
+                        text = response;
+                    } else if (response?.message?.content) {
+                        // Object with message.content
+                        if (Array.isArray(response.message.content)) {
+                            text = response.message.content.map(b => b.text || b.toString()).join("");
+                        } else {
+                            text = String(response.message.content);
+                        }
+                    } else if (response?.text) {
+                        text = response.text;
+                    } else if (response != null) {
+                        text = String(response);
+                    }
+
+                    if (!text || text === "[object Object]" || text.length < 20) {
+                        console.warn(`[Puter] ⚠️ ${model} returned empty/short text, trying next model`);
+                        lastErr = "Empty response";
+                        continue;
+                    }
+
+                    console.log("[Puter] Response text length:", text.length);
+
+                    // Clean markdown code blocks and parse JSON
+                    text = text.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
+
+                    // Try to extract JSON if there's extra text around it
+                    const jsonMatch = text.match(/\{[\s\S]*\}/);
+                    if (jsonMatch) {
+                        text = jsonMatch[0];
+                    }
+
+                    const data = JSON.parse(text);
+
+                    if (data.findings && data.findings.length > 0) {
+                        console.log(`[Puter] ✅ Analysis succeeded with ${model}! Findings:`, data.findings.length);
+                        return data;
+                    } else {
+                        console.warn(`[Puter] ⚠️ ${model} returned JSON but no findings`);
+                        lastErr = "No findings in response";
+                    }
+                } catch (e) {
+                    console.warn(`[Puter] ❌ Model ${model} failed:`, e.message || e);
+                    lastErr = e;
+                }
+            }
+
+            console.log("[Puter] All models failed, falling back to backend API keys. Last error:", lastErr);
+            return null;
+        } catch (err) {
+            console.warn("[Puter] Analysis error, falling back to backend API keys:", err);
+            return null;
+        }
+    }
 
     async function startAnalysis() {
         // Show loading
         loadingOverlay.classList.remove("hidden");
         document.body.style.overflow = "hidden";
 
-        // Animate loading steps
         const steps = ["step1", "step2", "step3", "step4"];
         let currentStep = 0;
 
@@ -215,20 +370,45 @@ document.addEventListener("DOMContentLoaded", () => {
 
         try {
             const formData = new FormData();
-            formData.append("image", selectedFile);
 
-            // Add metadata for professional report
+            // Append all files under 'images' key (for batch) or 'image' (single)
+            const isBatch = selectedFiles.length > 1;
+            selectedFiles.forEach((f) => {
+                formData.append(isBatch ? "images" : "image", f);
+            });
+
+            // Add metadata
             const patientNameInput = document.getElementById("patientNameInput");
             const scanTypeInput = document.getElementById("scanTypeInput");
             const bodyPartInput = document.getElementById("bodyPartInput");
             const patientDescriptionInput = document.getElementById("patientDescriptionInput");
 
-            if (patientNameInput) formData.append("patient_name", patientNameInput.value);
-            if (scanTypeInput) formData.append("scan_type", scanTypeInput.value);
-            if (bodyPartInput) formData.append("body_part", bodyPartInput.value);
-            if (patientDescriptionInput) formData.append("patient_description", patientDescriptionInput.value);
+            const patientName = patientNameInput ? patientNameInput.value : "";
+            const scanType = scanTypeInput ? scanTypeInput.value : "";
+            const bodyPart = bodyPartInput ? bodyPartInput.value : "";
+            const patientDesc = patientDescriptionInput ? patientDescriptionInput.value : "";
 
-            const response = await fetch(`${API_BASE}/api/analyze`, {
+            if (patientName) formData.append("patient_name", patientName);
+            if (scanType) formData.append("scan_type", scanType);
+            if (bodyPart) formData.append("body_part", bodyPart);
+            if (patientDesc) formData.append("patient_description", patientDesc);
+
+            // ---- Try Puter.js free AI analysis first (for any upload) ----
+            // Try on the first file to verify Puter is working
+            console.log("[Puter] Starting Puter.js analysis attempt...");
+            const puterResult = await tryPuterAnalysis(
+                selectedFiles[0], patientName, scanType, bodyPart, patientDesc
+            );
+            if (puterResult) {
+                formData.append("puter_result", JSON.stringify(puterResult));
+                console.log("[Puter] ✅ Pre-analyzed result attached to form data");
+            } else {
+                console.log("[Puter] ⚠️ Puter analysis returned null, will use API keys on backend");
+            }
+
+            const endpoint = isBatch ? `${API_BASE}/api/analyze-batch` : `${API_BASE}/api/analyze`;
+
+            const response = await fetch(endpoint, {
                 method: "POST",
                 body: formData,
             });
@@ -250,14 +430,13 @@ document.addEventListener("DOMContentLoaded", () => {
             });
             progressBar.style.width = "100%";
 
-            // Wait a moment to show completion
             await sleep(800);
 
             // Hide loading
             loadingOverlay.classList.add("hidden");
             document.body.style.overflow = "";
 
-            // Reset step states for next use
+            // Reset step states
             steps.forEach((s) => {
                 const el = document.getElementById(s);
                 el.classList.remove("active", "done");
@@ -265,13 +444,16 @@ document.addEventListener("DOMContentLoaded", () => {
             progressBar.style.width = "0%";
 
             // Display results
-            displayResults(data);
+            if (isBatch) {
+                displayBatchResults(data.results);
+            } else {
+                displayResults(data);
+            }
         } catch (err) {
             clearInterval(stepInterval);
             loadingOverlay.classList.add("hidden");
             document.body.style.overflow = "";
 
-            // Reset steps
             steps.forEach((s) => {
                 const el = document.getElementById(s);
                 el.classList.remove("active", "done");
@@ -319,9 +501,52 @@ document.addEventListener("DOMContentLoaded", () => {
             feedbackScanTypeInput.value = scanType.scan_type;
         }
 
-        // Model
-        document.getElementById("modelValue").textContent = data.analysis.model_info.name;
+        // Model & Source Info
+        const modelName = data.analysis.model_info.name;
+        // Source info hidden per user request
+
+        document.getElementById("modelValue").textContent = modelName;
         document.getElementById("modelDevice").textContent = `Device: ${data.analysis.model_info.device}`;
+
+        // 4. Prediction Score (New Feature)
+        // Extract confidence from detailed report or findings
+        let confidenceScore = 0;
+        if (data.analysis.detailed_report && data.analysis.detailed_report.confidence) {
+            // Try to parse "98%" or "0.98"
+            const confStr = String(data.analysis.detailed_report.confidence).replace("%", "");
+            confidenceScore = parseFloat(confStr);
+            if (confidenceScore <= 1) confidenceScore *= 100; // Handle 0.98
+        } else if (data.analysis.findings && data.analysis.findings.length > 0) {
+            confidenceScore = data.analysis.findings[0].confidence || 0;
+        }
+
+        // Display Score prominently next to severity
+        const scoreDisplay = document.createElement("div");
+        scoreDisplay.className = "prediction-score-badge summary-card"; // Added summary-card class for consistent styling
+        scoreDisplay.innerHTML = `
+            <div class="score-label" style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px;">AI Confidence</div>
+            <div class="score-value" style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">${Math.round(confidenceScore)}/100</div>
+        `;
+
+        // Insert after severity card if not already there
+        const existingScore = document.querySelector(".prediction-score-badge");
+        if (existingScore) existingScore.remove();
+
+        // Use existing severityCard variable (declared above)
+        if (severityCard && severityCard.parentNode) {
+            severityCard.parentNode.insertBefore(scoreDisplay, severityCard.nextSibling);
+        }
+
+        // Styling is now partly handled by summary-card class, plus specific overrides
+        scoreDisplay.style.cssText = `
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-width: 100px;
+            margin-left: 12px;
+            background: rgba(255, 255, 255, 0.05); /* Ensure visibility */
+        `;
 
         // Images section removed per user request
 
@@ -500,8 +725,213 @@ document.addEventListener("DOMContentLoaded", () => {
     newScanBtn.addEventListener("click", () => {
         resetUpload();
         resultsSection.classList.add("hidden");
+        const batchSec = document.getElementById("batchResultsSection");
+        if (batchSec) batchSec.classList.add("hidden");
         document.getElementById("upload").scrollIntoView({ behavior: "smooth" });
     });
+
+    // ---------- Batch Results (Accordion) ----------
+    function displayBatchResults(resultsArray) {
+        const batchSection = document.getElementById("batchResultsSection");
+        const batchAccordion = document.getElementById("batchAccordion");
+        const batchSummary = document.getElementById("batchResultsSummary");
+
+        // Hide single-scan results
+        resultsSection.classList.add("hidden");
+
+        // Summary
+        const successCount = resultsArray.filter(r => !r.error).length;
+        batchSummary.textContent = `${successCount} of ${resultsArray.length} scans analyzed successfully`;
+
+        // Collect report filenames for Download All
+        batchReportFilenames = resultsArray.filter(r => r.report).map(r => r.report.filename);
+
+        // Build accordion items
+        batchAccordion.innerHTML = "";
+
+        resultsArray.forEach((result, idx) => {
+            const item = document.createElement("div");
+            item.className = "batch-accordion-item";
+
+            // Determine severity color
+            let severityColor = "var(--accent-green)";
+            let severityLabel = "";
+            if (!result.error) {
+                const sev = result.analysis.overall_severity;
+                severityLabel = sev.toUpperCase();
+                if (sev === "high") severityColor = "var(--accent-red)";
+                else if (sev === "medium") severityColor = "var(--accent-yellow)";
+            }
+
+            // Header
+            const header = document.createElement("div");
+            header.className = "accordion-header";
+            header.innerHTML = `
+                <div class="accordion-header-left">
+                    <span class="accordion-index">${idx + 1}</span>
+                    <i data-lucide="file-image" class="accordion-file-icon"></i>
+                    <span class="accordion-filename">${result.filename}</span>
+                    ${!result.error ? `<span class="accordion-severity" style="color:${severityColor}">${severityLabel}</span>` : `<span class="accordion-error-badge">ERROR</span>`}
+                </div>
+                <div class="accordion-header-right">
+                    ${!result.error ? `<button class="btn btn-ghost btn-sm accordion-download-btn" data-url="${result.report.download_url}" title="Download PDF"><i data-lucide="download"></i></button>` : ""}
+                    <i data-lucide="chevron-down" class="accordion-chevron"></i>
+                </div>
+            `;
+
+            // Body
+            const body = document.createElement("div");
+            body.className = "accordion-body";
+
+            if (result.error) {
+                body.innerHTML = `<div class="accordion-error">${result.error}</div>`;
+            } else {
+                body.innerHTML = buildAccordionBodyHTML(result);
+            }
+
+            item.appendChild(header);
+            item.appendChild(body);
+            batchAccordion.appendChild(item);
+
+            // Toggle expand/collapse
+            header.addEventListener("click", (e) => {
+                // Don't toggle if download button was clicked
+                if (e.target.closest(".accordion-download-btn")) return;
+                item.classList.toggle("expanded");
+            });
+
+            // Individual download
+            const dlBtn = header.querySelector(".accordion-download-btn");
+            if (dlBtn) {
+                dlBtn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    window.open(dlBtn.dataset.url, "_blank");
+                });
+            }
+        });
+
+        // Auto-expand first item
+        const firstItem = batchAccordion.querySelector(".batch-accordion-item");
+        if (firstItem) firstItem.classList.add("expanded");
+
+        // Show section
+        batchSection.classList.remove("hidden");
+        lucide.createIcons();
+        batchSection.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function buildAccordionBodyHTML(result) {
+        const analysis = result.analysis;
+        let html = "";
+
+        // Primary finding + severity
+        html += `<div class="accordion-result-summary">`;
+        html += `<div class="accordion-result-row"><strong>Primary Finding:</strong> ${analysis.primary_finding}</div>`;
+        html += `<div class="accordion-result-row"><strong>Severity:</strong> <span style="color:${analysis.overall_severity === 'high' ? 'var(--accent-red)' : analysis.overall_severity === 'medium' ? 'var(--accent-yellow)' : 'var(--accent-green)'}">${analysis.overall_severity.toUpperCase()}</span></div>`;
+        html += `<div class="accordion-result-row"><strong>Model:</strong> ${analysis.model_info.name} (${analysis.model_info.device})</div>`;
+        html += `</div>`;
+
+        // Detailed report (if available)
+        if (analysis.detailed_report) {
+            const report = analysis.detailed_report;
+
+            // Clinical interpretation
+            if (report.summary) {
+                html += `<div class="accordion-detail-section">`;
+                html += `<div class="accordion-detail-title">Clinical Interpretation</div>`;
+                html += `<div class="accordion-detail-text">${report.summary}</div>`;
+                html += `</div>`;
+            }
+
+            // Metrics table
+            if (report.metrics && report.metrics.length > 0) {
+                html += `<div class="accordion-detail-section">`;
+                html += `<div class="accordion-detail-title">Quantitative Metrics</div>`;
+                html += `<table class="report-table"><thead><tr><th>Parameter</th><th>Result</th><th>Normal</th><th>Status</th></tr></thead><tbody>`;
+                report.metrics.forEach(m => {
+                    const sc = m.status === 'Normal' ? 'status-normal' : m.status === 'Abnormal' ? 'status-abnormal' : 'status-review';
+                    html += `<tr><td>${m.parameter}</td><td>${m.result}</td><td>${m.normal}</td><td class="${sc}">${m.status}</td></tr>`;
+                });
+                html += `</tbody></table></div>`;
+            }
+
+            // Recommendations
+            if (report.recommendations && report.recommendations.length > 0) {
+                html += `<div class="accordion-detail-section">`;
+                html += `<div class="accordion-detail-title">Recommendations</div>`;
+                html += `<ul class="report-list">`;
+                report.recommendations.forEach(r => { html += `<li>${r}</li>`; });
+                html += `</ul></div>`;
+            }
+        }
+
+        // Findings list
+        if (analysis.findings && analysis.findings.length > 0) {
+            html += `<div class="accordion-detail-section">`;
+            html += `<div class="accordion-detail-title">All Findings</div>`;
+            analysis.findings.forEach(f => {
+                html += `<div class="accordion-finding">`;
+                html += `<span class="finding-severity-badge ${f.severity}">${f.severity}</span>`;
+                html += `<span class="accordion-finding-name">${f.finding}</span>`;
+                html += `<span class="accordion-finding-conf">${f.confidence}%</span>`;
+                html += `</div>`;
+            });
+            html += `</div>`;
+        }
+
+        return html;
+    }
+
+    // ---------- Download All Reports (ZIP) ----------
+    const downloadAllBtn = document.getElementById("downloadAllBtn");
+    if (downloadAllBtn) {
+        downloadAllBtn.addEventListener("click", async () => {
+            if (batchReportFilenames.length === 0) {
+                alert("No reports available to download.");
+                return;
+            }
+            downloadAllBtn.disabled = true;
+            downloadAllBtn.querySelector("i")?.classList.add("spin");
+
+            try {
+                const response = await fetch(`${API_BASE}/api/reports/download-all`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ filenames: batchReportFilenames }),
+                });
+
+                if (!response.ok) throw new Error("Failed to download reports");
+
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "HealthGuard_AI_Reports.zip";
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(url);
+            } catch (err) {
+                alert("Download Error: " + err.message);
+                console.error(err);
+            } finally {
+                downloadAllBtn.disabled = false;
+                downloadAllBtn.querySelector("i")?.classList.remove("spin");
+            }
+        });
+    }
+
+    // ---------- New Batch Scan ----------
+    const newBatchScanBtn = document.getElementById("newBatchScanBtn");
+    if (newBatchScanBtn) {
+        newBatchScanBtn.addEventListener("click", () => {
+            resetUpload();
+            const batchSec = document.getElementById("batchResultsSection");
+            if (batchSec) batchSec.classList.add("hidden");
+            resultsSection.classList.add("hidden");
+            document.getElementById("upload").scrollIntoView({ behavior: "smooth" });
+        });
+    }
 
     // =============================================
     // ========== FEEDBACK SYSTEM ==========
